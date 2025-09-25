@@ -7,8 +7,70 @@ from torch import nn
 import torch.nn.functional as F
 from torch import distributions as torchd
 
+from transformers import ViTImageProcessor, ViTMAEModel
+import torchvision.transforms as T
+
 import tools
 
+class MAEEncoder(nn.Module):
+    def __init__(self, proj_dim, mlp_units):
+        super(MAEEncoder, self).__init__()
+        model_name = "facebook/vit-mae-base"
+        
+        self.processor = ViTImageProcessor.from_pretrained(model_name)
+        self.model = ViTMAEModel.from_pretrained(model_name)
+        self.transform = T.Compose([
+            T.Resize((224, 224)),
+            T.Normalize(mean=self.processor.image_mean, std=self.processor.image_std),
+        ])
+        
+        # モデルの重みを凍結
+        self.model.requires_grad_(False)
+        
+        # 特徴量の次元を調整するためのプロジェクション層
+        feature_dim = self.model.config.hidden_size
+        self.projection = nn.Linear(feature_dim, proj_dim)
+        
+        self.outdim = proj_dim
+        self.subsample_interval = 16  # 16フレームごとに1フレームを処理
+
+    def forward(self, obs):
+        image_tensor = obs["image"]
+        is_sequence = image_tensor.ndim == 5
+        
+        # 特徴抽出は勾配計算を必要としないため、全体を no_grad で囲む
+        with torch.no_grad():
+            if is_sequence:
+                # 学習時の間引き処理
+                images_to_process = image_tensor[:, ::self.subsample_interval]
+                b, t_sub, h, w, c = images_to_process.shape
+                
+                # 前処理
+                pixel_values = images_to_process.reshape(b * t_sub, h, w, c).permute(0, 3, 1, 2)
+                pixel_values = self.transform(pixel_values)
+                
+                # エンコード
+                features = self.model(pixel_values=pixel_values).last_hidden_state[:, 0]
+            else:
+                # 評価時の単一フレーム処理
+                images_to_process = image_tensor
+                pixel_values = images_to_process.permute(0, 3, 1, 2)
+                pixel_values = self.transform(pixel_values)
+                
+                # エンコード
+                features = self.model(pixel_values=pixel_values).last_hidden_state[:, 0]
+
+        # プロジェクション層は訓練対象なので、no_gradブロックの外に出す
+        projected_features = self.projection(features)
+        
+        # 最終的な特徴量の形状を整える
+        if is_sequence:
+            projected_features = projected_features.reshape(b, t_sub, -1)
+            final_features = torch.repeat_interleave(projected_features, self.subsample_interval, dim=1)
+        else:
+            final_features = projected_features
+            
+        return final_features
 
 class RSSM(nn.Module):
     def __init__(
@@ -304,6 +366,7 @@ class MultiEncoder(nn.Module):
         mlp_layers,
         mlp_units,
         symlog_inputs,
+        use_mae=False,  # フラグ名を変更
     ):
         super(MultiEncoder, self).__init__()
         excluded = ("is_first", "is_last", "is_terminal", "reward")
@@ -312,6 +375,7 @@ class MultiEncoder(nn.Module):
             for k, v in shapes.items()
             if k not in excluded and not k.startswith("log_")
         }
+        
         self.cnn_shapes = {
             k: v for k, v in shapes.items() if len(v) == 3 and re.match(cnn_keys, k)
         }
@@ -320,18 +384,26 @@ class MultiEncoder(nn.Module):
             for k, v in shapes.items()
             if len(v) in (1, 2) and re.match(mlp_keys, k)
         }
-        print("Encoder CNN shapes:", self.cnn_shapes)
-        print("Encoder MLP shapes:", self.mlp_shapes)
-
+        
         self.outdim = 0
-        if self.cnn_shapes:
-            input_ch = sum([v[-1] for v in self.cnn_shapes.values()])
-            input_shape = tuple(self.cnn_shapes.values())[0][:2] + (input_ch,)
-            self._cnn = ConvEncoder(
-                input_shape, cnn_depth, act, norm, kernel_size, minres
-            )
-            self.outdim += self._cnn.outdim
+
+        if use_mae:
+            print("Using memory-efficient MAE as the visual encoder.")
+            if self.cnn_shapes:
+                self._cnn = MAEEncoder(proj_dim=mlp_units, mlp_units=mlp_units)
+                self.outdim += self._cnn.outdim
+        else:
+            print("Using original ConvEncoder as the visual encoder.")
+            if self.cnn_shapes:
+                input_ch = sum([v[-1] for v in self.cnn_shapes.values()])
+                input_shape = tuple(self.cnn_shapes.values())[0][:2] + (input_ch,)
+                self._cnn = ConvEncoder(
+                    input_shape, cnn_depth, act, norm, kernel_size, minres
+                )
+                self.outdim += self._cnn.outdim
+
         if self.mlp_shapes:
+            print("Using MLP encoder for vector inputs.")
             input_size = sum([sum(v) for v in self.mlp_shapes.values()])
             self._mlp = MLP(
                 input_size,
@@ -348,13 +420,18 @@ class MultiEncoder(nn.Module):
     def forward(self, obs):
         outputs = []
         if self.cnn_shapes:
-            inputs = torch.cat([obs[k] for k in self.cnn_shapes], -1)
-            outputs.append(self._cnn(inputs))
+            # MAEEncoderはobs辞書全体を期待する
+            if isinstance(self._cnn, MAEEncoder):
+                 outputs.append(self._cnn(obs))
+            else:
+                inputs = torch.cat([obs[k] for k in self.cnn_shapes], -1)
+                outputs.append(self._cnn(inputs))
+        
         if self.mlp_shapes:
             inputs = torch.cat([obs[k] for k in self.mlp_shapes], -1)
             outputs.append(self._mlp(inputs))
-        outputs = torch.cat(outputs, -1)
-        return outputs
+        
+        return torch.cat(outputs, -1)
 
 
 class MultiDecoder(nn.Module):

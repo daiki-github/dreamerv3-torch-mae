@@ -88,7 +88,8 @@ class WorldModel(nn.Module):
             assert name in self.heads, name
         self._model_opt = tools.Optimizer(
             "model",
-            self.parameters(),
+            # self.parameters(),
+            [p for p in self.parameters() if p.requires_grad],
             config.model_lr,
             config.opt_eps,
             config.grad_clip,
@@ -113,7 +114,7 @@ class WorldModel(nn.Module):
         data = self.preprocess(data)
 
         with tools.RequiresGrad(self):
-            with torch.cuda.amp.autocast(self._use_amp):
+            with torch.amp.autocast(device_type='cuda', enabled=self._use_amp):
                 embed = self.encoder(data)
                 post, prior = self.dynamics.observe(
                     embed, data["action"], data["is_first"]
@@ -154,7 +155,7 @@ class WorldModel(nn.Module):
         metrics["dyn_loss"] = to_np(dyn_loss)
         metrics["rep_loss"] = to_np(rep_loss)
         metrics["kl"] = to_np(torch.mean(kl_value))
-        with torch.cuda.amp.autocast(self._use_amp):
+        with torch.amp.autocast(device_type='cuda', enabled=self._use_amp):
             metrics["prior_ent"] = to_np(
                 torch.mean(self.dynamics.get_dist(prior).entropy())
             )
@@ -293,7 +294,7 @@ class ImagBehavior(nn.Module):
         metrics = {}
 
         with tools.RequiresGrad(self.actor):
-            with torch.cuda.amp.autocast(self._use_amp):
+            with torch.amp.autocast(device_type='cuda', enabled=self._use_amp):
                 imag_feat, imag_state, imag_action = self._imagine(
                     start, self.actor, self._config.imag_horizon
                 )
@@ -317,7 +318,7 @@ class ImagBehavior(nn.Module):
                 value_input = imag_feat
 
         with tools.RequiresGrad(self.value):
-            with torch.cuda.amp.autocast(self._use_amp):
+            with torch.amp.autocast(device_type='cuda', enabled=self._use_amp):
                 value = self.value(value_input[:-1].detach())
                 target = torch.stack(target, dim=1)
                 # (time, batch, 1), (time, batch, 1) -> (time, batch)
