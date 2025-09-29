@@ -30,22 +30,9 @@ Code: https://github.com/daiki-github/dreamerv3-torch-mae
  - 黒：DreamerV3 with MAE (rep_scale=0.1)<br>
  - 赤：DreamerV3 with MAE (rep_scale=0)<br>
 
-
-
-# Analysis
-
-
-
-
-
-# Other Related Works
-本課題に関連する研究について紹介する．
-
-	再構成を伴わない世界モデル
-	
-
-
-# Future Direction
+# References
+ - https://github.com/NM512/dreamerv3-torch
+ - https://huggingface.co/docs/transformers/model_doc/vit_mae
 
 
 
