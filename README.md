@@ -25,7 +25,7 @@ Code: https://github.com/daiki-github/dreamerv3-torch-mae
 
 # Experiments
  以下に，訓練時の収益値の遷移を示す．<br>
-![](https://scrapbox.io/files/68d9088ebb02ebc56bbc0c9f.png)<br>
+![](https://github.com/daiki-github/dreamerv3-torch-mae/blob/main/results/result.png?raw=true)<br>
  - 青：Original DreamerV3<br>
  - 黒：DreamerV3 with MAE (rep_scale=0.1)<br>
  - 赤：DreamerV3 with MAE (rep_scale=0)<br>
